@@ -35,8 +35,6 @@ pub fn UmmAllocator(comptime config: Config) type {
                     std.meta.Int(.unsigned, @typeInfo(BlockIndexType).int.bits - 1)))
                 return error.BufferTooBig;
 
-            @memset(buf, 0);
-
             const first_block = self.get_block(0);
             const first_block_storage = first_block.get_storage(&self);
 
@@ -53,8 +51,14 @@ pub fn UmmAllocator(comptime config: Config) type {
             first_block_storage.set_free_next(second_block);
 
             second_block_storage.set_next(self.get_last_block(), true);
+            second_block_storage.set_prev(first_block);
+            second_block_storage.set_free_next(first_block);
+            second_block_storage.set_free_prev(first_block);
 
+            last_block_storage.set_next(first_block, false);
             last_block_storage.set_prev(second_block);
+            last_block_storage.set_free_next(first_block);
+            last_block_storage.set_free_prev(second_block);
 
             return self;
         }
@@ -587,7 +591,7 @@ fn umm_test_random_size(comptime free_order: FreeOrder, numPasses: u32) !void {
             else std.heap.page_allocator);
         defer list.deinit();
 
-        var rng = std.Random.DefaultPrng.init([_]u8{0x42} ** 32);
+        var rng = std.Random.DefaultPrng.init(0);
         const rand = rng.random();
 
         var i: usize = 0;
@@ -646,7 +650,8 @@ test "random allocations and frees within memory limit" {
     defer std.testing.expect(umm.deinit() == .ok) catch @panic("leak");
     const allocator = umm.allocator();
 
-    const rand = std.Random.DefaultPrng.init(0).random();
+    var rng = std.Random.DefaultPrng.init(0);
+    const rand = rng.random();
 
     var allocated = std.ArrayList([]u8).init(testing.allocator);
     defer allocated.deinit();
