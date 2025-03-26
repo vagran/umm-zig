@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 
+
 pub const Config = struct {
     block_body_size: usize = 8,
     block_selection_method: enum {
@@ -10,8 +11,10 @@ pub const Config = struct {
     debug_logging: bool = false,
 };
 
-pub const std_options = struct {
-    pub const log_level = .debug;
+pub const std_options: std.Options = .{
+    .log_scope_levels = &.{
+        .{ .scope = .umm, .level = .debug }
+    }
 };
 
 const logger = std.log.scoped(.umm);
@@ -24,10 +27,12 @@ pub fn UmmAllocator(comptime config: Config) type {
 
         pub fn init(buf: []u8) !Self {
             const self = Self{
-                .heap = @as([*]Block.Storage, @ptrCast(@alignCast(buf.ptr)))[0..(buf.len / @sizeOf(Block.Storage))],
+                .heap = @as([*]Block.Storage, @ptrCast(@alignCast(buf.ptr)))
+                    [0..(buf.len / @sizeOf(Block.Storage))],
             };
 
-            if (self.heap.len > std.math.maxInt(std.meta.Int(.unsigned, @typeInfo(BlockIndexType).Int.bits - 1)))
+            if (self.heap.len > std.math.maxInt(
+                    std.meta.Int(.unsigned, @typeInfo(BlockIndexType).int.bits - 1)))
                 return error.BufferTooBig;
 
             @memset(buf, 0);
@@ -53,6 +58,7 @@ pub fn UmmAllocator(comptime config: Config) type {
 
             return self;
         }
+
         pub const Check = enum { ok, leak, fragmented };
 
         /// This function can be called to check if the heap ended up fragmented or
@@ -70,7 +76,8 @@ pub fn UmmAllocator(comptime config: Config) type {
                 blocks_count += 1;
                 const next_block = current_block.next(self);
 
-                const block_size = if (current_block == last_block) 1 else @intFromEnum(next_block) - @intFromEnum(current_block);
+                const block_size = if (current_block == last_block) 1 else
+                    @intFromEnum(next_block) - @intFromEnum(current_block);
 
                 if (current_block.get_storage(self).is_free())
                     total_free_count += block_size;
@@ -95,11 +102,12 @@ pub fn UmmAllocator(comptime config: Config) type {
                     .alloc = alloc,
                     .resize = resize,
                     .free = free,
+                    .remap = remap,
                 },
             };
         }
 
-        fn alloc(ctx: *anyopaque, len: usize, log2_align: u8, ret_addr: usize) ?[*]u8 {
+        fn alloc(ctx: *anyopaque, len: usize, log2_align: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
             _ = ret_addr;
             const self = @as(*Self, @ptrCast(@alignCast(ctx)));
 
@@ -116,12 +124,12 @@ pub fn UmmAllocator(comptime config: Config) type {
                 const blocks_count = @intFromEnum(next_block) - @intFromEnum(current);
 
                 if (config.debug_logging)
-                    logger.debug("Looking at block {} size {}", .{ current, blocks_count });
+                    std.debug.print("Looking at block {} size {}\n", .{ current, blocks_count });
 
                 const current_storage = current.get_storage(self);
 
                 const addr = @intFromPtr(&current_storage.body.data);
-                const adjusted_addr = std.mem.alignForwardLog2(addr, log2_align);
+                const adjusted_addr = std.mem.alignForwardLog2(addr, @intFromEnum(log2_align));
 
                 target_blocks_count = Block.calculate_number_of_blocks(adjusted_addr - addr + len);
 
@@ -154,16 +162,18 @@ pub fn UmmAllocator(comptime config: Config) type {
             }
 
             if (config.debug_logging)
-                logger.debug("Found {} with size {}", .{ best_block, best_size });
+                std.debug.print("Found {} with size {}\n", .{ best_block, best_size });
 
             const best_block_storage = best_block.get_storage(self);
             if (best_size == target_blocks_count) {
                 if (config.debug_logging)
-                    logger.debug("Allocating {} blocks starting at {} - exact", .{ target_blocks_count, best_block });
-                best_block_storage.disonnect_from_freelist(self);
+                    std.debug.print("Allocating {} blocks starting at {} - exact\n",
+                                 .{ target_blocks_count, best_block });
+                best_block_storage.disconnect_from_freelist(self);
             } else {
                 if (config.debug_logging)
-                    logger.debug("Allocating {} blocks starting at {} - splitting", .{ target_blocks_count, best_block });
+                    std.debug.print("Allocating {} blocks starting at {} - splitting\n",
+                                 .{ target_blocks_count, best_block });
 
                 const new_block = best_block_storage.split(best_block, self, target_blocks_count);
                 const new_block_storage = new_block.get_storage(self);
@@ -173,14 +183,14 @@ pub fn UmmAllocator(comptime config: Config) type {
 
                 best_block_storage.free_next().get_storage(self).set_free_prev(new_block);
                 new_block_storage.set_free_next(best_block_storage.free_next());
-
-                best_block_storage.set_next(best_block_storage.next(), false);
             }
+            best_block_storage.set_next(best_block_storage.next(), false);
 
             return @ptrFromInt(best_adjusted_addr);
         }
 
-        fn resize(ctx: *anyopaque, buf: []u8, log2_align: u8, new_len: usize, ret_addr: usize) bool {
+        fn resize(ctx: *anyopaque, buf: []u8, log2_align: std.mem.Alignment, new_len: usize,
+                  ret_addr: usize) bool {
             const self = @as(*Self, @ptrCast(@alignCast(ctx)));
             _ = self;
             _ = buf;
@@ -190,7 +200,7 @@ pub fn UmmAllocator(comptime config: Config) type {
             return false;
         }
 
-        fn free(ctx: *anyopaque, buf: []u8, log2_align: u8, ret_addr: usize) void {
+        fn free(ctx: *anyopaque, buf: []u8, log2_align: std.mem.Alignment, ret_addr: usize) void {
             _ = log2_align;
             _ = ret_addr;
             const self = @as(*Self, @ptrCast(@alignCast(ctx)));
@@ -198,13 +208,14 @@ pub fn UmmAllocator(comptime config: Config) type {
             const addr = @intFromPtr(buf.ptr) - @offsetOf(Block.Storage, "body");
             const aligned_addr = std.mem.alignBackward(usize, addr, @alignOf(Block.Storage));
 
-            const block = self.get_block(@intCast(@divFloor(aligned_addr - @intFromPtr(self.heap.ptr), @sizeOf(Block.Storage))));
+            const block = self.get_block(@intCast(
+                @divFloor(aligned_addr - @intFromPtr(self.heap.ptr), @sizeOf(Block.Storage))));
             const block_storage = block.get_storage(self);
 
             std.debug.assert(!block_storage.is_free()); // double free
 
             if (config.debug_logging)
-                logger.debug("Freeing {}", .{block});
+                std.debug.print("Freeing {}\n", .{block});
 
             block_storage.assimilate_up(block, self);
 
@@ -214,7 +225,7 @@ pub fn UmmAllocator(comptime config: Config) type {
                 block_storage.assimilate_down(self, true);
             } else {
                 if (config.debug_logging)
-                    logger.debug("Just add to head of free list", .{});
+                    std.debug.print("Just add to head of free list\n", .{});
 
                 const first = Block.first;
                 const first_storage = first.get_storage(self);
@@ -232,26 +243,40 @@ pub fn UmmAllocator(comptime config: Config) type {
             }
         }
 
+
+        fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize,
+                 ret_addr: usize) ?[*]u8
+        {
+            const self = @as(*Self, @ptrCast(@alignCast(ctx)));
+            _ = self;
+            _ = memory;
+            _ = alignment;
+            _ = new_len;
+            _ = ret_addr;
+            return null;
+        }
+
         fn dump_heap(self: *const Self) void {
             var current = self.get_block(0);
             const last = self.get_last_block();
             while (true) {
                 const next_block = current.next(self);
 
-                const block_size = if (current == last) 1 else @intFromEnum(next_block) - @intFromEnum(current);
+                const block_size = if (current == last) 1 else
+                    @intFromEnum(next_block) - @intFromEnum(current);
                 if (config.debug_logging)
-                    logger.debug("{} = {} size: {}", .{ current, current.get_storage(self), block_size });
+                    std.debug.print("{} = {} size: {}\n", .{ current, current.get_storage(self), block_size });
                 current = next_block;
                 if (current == Block.first) break;
             }
         }
 
         inline fn get_block(_: Self, index: BlockIndexType) Block {
-            return @enumFromInt(@as(BlockIndexType, @intCast(index)));
+            return @enumFromInt(index);
         }
 
         fn get_last_block(self: Self) Block {
-            return @enumFromInt(@as(BlockIndexType, @intCast(self.heap.len - 1)));
+            return self.get_block(@intCast(self.heap.len - 1));
         }
 
         const BlockIndexType = u16;
@@ -268,7 +293,7 @@ pub fn UmmAllocator(comptime config: Config) type {
                     prev: Block,
                 };
 
-                const Header = extern union {
+                const Header = extern struct {
                     used: PointerPair,
                 };
 
@@ -285,11 +310,13 @@ pub fn UmmAllocator(comptime config: Config) type {
                 }
 
                 fn next(self: *const Storage) Block {
-                    return @enumFromInt(@as(BlockIndexType, @intCast(@intFromEnum(self.header.used.next) & BlockNumberMask)));
+                    return @enumFromInt(@as(BlockIndexType,
+                        @intCast(@intFromEnum(self.header.used.next) & BlockNumberMask)));
                 }
 
                 fn set_next(self: *Storage, next_: Block, free_: bool) void {
-                    self.header.used.next = if (free_) next_.get_marked_as_free() else next_.get_marked_as_used();
+                    self.header.used.next = if (free_) next_.get_marked_as_free() else
+                        next_.get_marked_as_used();
                 }
 
                 fn set_next_raw(self: *Storage, next_: Block) void {
@@ -297,7 +324,8 @@ pub fn UmmAllocator(comptime config: Config) type {
                 }
 
                 fn prev(self: *const Storage) Block {
-                    return @enumFromInt(@as(BlockIndexType, @intCast(@intFromEnum(self.header.used.prev) & BlockNumberMask)));
+                    return @enumFromInt(@as(BlockIndexType,
+                        @intCast(@intFromEnum(self.header.used.prev) & BlockNumberMask)));
                 }
 
                 fn set_prev(self: *Storage, prev_: Block) void {
@@ -322,7 +350,7 @@ pub fn UmmAllocator(comptime config: Config) type {
                     self.body.free.prev = prev_;
                 }
 
-                inline fn split(self: *Storage, self_block: Block, umm: *Self, blocks: usize) Block {
+                fn split(self: *Storage, self_block: Block, umm: *Self, blocks: usize) Block {
                     const new_block = umm.get_block(@intCast(@intFromEnum(self_block) + blocks));
                     const new_block_storage = new_block.get_storage(umm);
 
@@ -335,7 +363,7 @@ pub fn UmmAllocator(comptime config: Config) type {
                     return new_block;
                 }
 
-                inline fn disonnect_from_freelist(self: *Storage, umm: *const Self) void {
+                fn disconnect_from_freelist(self: *Storage, umm: *const Self) void {
                     const prev_block = self.free_prev();
                     const prev_storage = prev_block.get_storage(umm);
 
@@ -348,15 +376,15 @@ pub fn UmmAllocator(comptime config: Config) type {
                     self.set_next(self.next(), true);
                 }
 
-                inline fn assimilate_up(self: *Storage, self_block: Block, umm: *const Self) void {
+                fn assimilate_up(self: *Storage, self_block: Block, umm: *const Self) void {
                     const next_block = self.next();
                     const next_block_storage = next_block.get_storage(umm);
 
                     if (next_block_storage.is_free()) {
                         if (config.debug_logging)
-                            logger.debug("Assimilate up to next block, which is FREE", .{});
+                            std.debug.print("Assimilate up to next block, which is FREE\n", .{});
 
-                        next_block_storage.disonnect_from_freelist(umm);
+                        next_block_storage.disconnect_from_freelist(umm);
 
                         const next_next_block = next_block_storage.next();
                         const next_next_block_storage = next_next_block.get_storage(umm);
@@ -376,7 +404,8 @@ pub fn UmmAllocator(comptime config: Config) type {
                     next_block_storage.set_prev(self.prev());
                 }
 
-                pub fn format(value: Storage, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+                pub fn format(value: Storage, comptime fmt: []const u8,
+                              options: std.fmt.FormatOptions, writer: anytype) !void {
                     _ = fmt;
                     _ = options;
                     try writer.print("Storage(prev: {} next: {}", .{
@@ -404,7 +433,7 @@ pub fn UmmAllocator(comptime config: Config) type {
                     return 1;
 
                 const temp = size - @sizeOf(Storage.Body);
-                const blocks = (2 + ((temp)) / @sizeOf(Storage));
+                const blocks = 2 + (temp - 1) / @sizeOf(Storage);
 
                 if (blocks > std.math.maxInt(BlockIndexType))
                     return std.math.maxInt(BlockIndexType);
@@ -421,24 +450,25 @@ pub fn UmmAllocator(comptime config: Config) type {
             }
 
             fn free_next(self: Block, umm: *const Self) Block {
-                const storage = self.get_storage(umm);
-                return storage.free_next();
+                return self.get_storage(umm).free_next();
             }
 
             fn free_prev(self: Block, umm: *const Self) Block {
-                const storage = self.get_storage(umm);
-                return storage.free_prev();
+                return self.get_storage(umm).free_prev();
             }
 
             fn get_marked_as_free(self: Block) Block {
-                return @enumFromInt(@as(BlockIndexType, @intCast(@intFromEnum(self) | Block.FreeListMask)));
+                return @enumFromInt(@as(BlockIndexType, @intCast(
+                    @intFromEnum(self) | Block.FreeListMask)));
             }
 
             fn get_marked_as_used(self: Block) Block {
-                return @enumFromInt(@as(BlockIndexType, @intCast(@intFromEnum(self) & Block.BlockNumberMask)));
+                return @enumFromInt(@as(BlockIndexType, @intCast(
+                    @intFromEnum(self) & Block.BlockNumberMask)));
             }
 
-            pub fn format(value: Block, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            pub fn format(value: Block, comptime fmt: []const u8, options: std.fmt.FormatOptions,
+                          writer: anytype) !void {
                 _ = fmt;
                 _ = options;
                 try writer.print("Block({})", .{@intFromEnum(value)});
@@ -446,11 +476,13 @@ pub fn UmmAllocator(comptime config: Config) type {
         };
     };
 }
+
 const FreeOrder = enum {
     normal,
     reversed,
     random,
 };
+
 fn umm_test_type(comptime T: type, comptime free_order: FreeOrder) !void {
     const Umm = UmmAllocator(.{});
     var buf: [std.math.maxInt(u15) * 8]u8 align(16) = undefined;
@@ -458,7 +490,8 @@ fn umm_test_type(comptime T: type, comptime free_order: FreeOrder) !void {
     defer std.testing.expect(umm.deinit() == .ok) catch @panic("leak");
     const allocator = umm.allocator();
 
-    var list = std.ArrayList(*T).init(if (@import("builtin").is_test) testing.allocator else std.heap.page_allocator);
+    var list = std.ArrayList(*T).init(if (@import("builtin").is_test) testing.allocator
+        else std.heap.page_allocator);
     defer list.deinit();
 
     var i: usize = 0;
@@ -472,22 +505,25 @@ fn umm_test_type(comptime T: type, comptime free_order: FreeOrder) !void {
         .normal => {
             for (list.items) |ptr| {
                 try testing.expect(std.mem.allEqual(u8, std.mem.asBytes(ptr), 0x41));
+                @memset(std.mem.asBytes(ptr), 0xfe);
                 allocator.destroy(ptr);
             }
         },
         .reversed => {
-            while (list.popOrNull()) |ptr| {
+            while (list.pop()) |ptr| {
                 try testing.expect(std.mem.allEqual(u8, std.mem.asBytes(ptr), 0x41));
+                @memset(std.mem.asBytes(ptr), 0xfe);
                 allocator.destroy(ptr);
             }
         },
         .random => {
-            var ascon = std.rand.Ascon.init([_]u8{0x42} ** 32);
+            var ascon = std.Random.Ascon.init([_]u8{0x42} ** 32);
             const rand = ascon.random();
 
             while (list.getLastOrNull()) |_| {
                 const ptr = list.swapRemove(rand.intRangeAtMost(usize, 0, list.items.len - 1));
                 try testing.expect(std.mem.allEqual(u8, std.mem.asBytes(ptr), 0x41));
+                @memset(std.mem.asBytes(ptr), 0xfe);
                 allocator.destroy(ptr);
             }
         },
@@ -539,110 +575,122 @@ test "Foo allocations - free in random order" {
     try umm_test_type(Foo, .random);
 }
 
-fn umm_test_random_size(comptime free_order: FreeOrder) !void {
+fn umm_test_random_size(comptime free_order: FreeOrder, numPasses: u32) !void {
     const Umm = UmmAllocator(.{});
     var buf: [std.math.maxInt(u15) * 8]u8 align(16) = undefined;
     var umm = try Umm.init(&buf);
     defer std.testing.expect(umm.deinit() == .ok) catch @panic("leak");
     const allocator = umm.allocator();
 
-    var list = std.ArrayList([]u8).init(if (@import("builtin").is_test) testing.allocator else std.heap.page_allocator);
-    defer list.deinit();
+    for (0..numPasses) |_| {
+        var list = std.ArrayList([]u8).init(if (@import("builtin").is_test) testing.allocator
+            else std.heap.page_allocator);
+        defer list.deinit();
 
-    var ascon = std.rand.Ascon.init([_]u8{0x42} ** 32);
-    const rand = ascon.random();
+        var rng = std.Random.DefaultPrng.init([_]u8{0x42} ** 32);
+        const rand = rng.random();
 
-    var i: usize = 0;
-    while (i < 256) : (i += 1) {
-        const size = rand.intRangeLessThanBiased(usize, 0, 1024);
-        const ptr = try allocator.alloc(u8, size);
-        @memset(ptr, 0x41);
-        try list.append(ptr);
-    }
+        var i: usize = 0;
+        while (i < 256) : (i += 1) {
+            const size = rand.intRangeLessThanBiased(usize, 0, 1024);
+            const ptr = try allocator.alloc(u8, size);
+            @memset(ptr, 0x41);
+            try list.append(ptr);
+        }
 
-    switch (free_order) {
-        .normal => {
-            for (list.items) |ptr| {
-                try testing.expect(std.mem.allEqual(u8, ptr, 0x41));
-                allocator.free(ptr);
-            }
-        },
-        .reversed => {
-            while (list.popOrNull()) |ptr| {
-                try testing.expect(std.mem.allEqual(u8, ptr, 0x41));
-                allocator.free(ptr);
-            }
-        },
-        .random => {
-            while (list.getLastOrNull()) |_| {
-                const ptr = list.swapRemove(rand.intRangeAtMost(usize, 0, list.items.len - 1));
-                try testing.expect(std.mem.allEqual(u8, ptr, 0x41));
-                allocator.free(ptr);
-            }
-        },
+        switch (free_order) {
+            .normal => {
+                for (list.items) |ptr| {
+                    try testing.expect(std.mem.allEqual(u8, ptr, 0x41));
+                    @memset(ptr, 0xfe);
+                    allocator.free(ptr);
+                }
+            },
+            .reversed => {
+                while (list.pop()) |ptr| {
+                    try testing.expect(std.mem.allEqual(u8, ptr, 0x41));
+                    @memset(ptr, 0xfe);
+                    allocator.free(ptr);
+                }
+            },
+            .random => {
+                while (list.getLastOrNull()) |_| {
+                    const ptr = list.swapRemove(rand.intRangeAtMost(usize, 0, list.items.len - 1));
+                    try testing.expect(std.mem.allEqual(u8, ptr, 0x41));
+                    @memset(ptr, 0xfe);
+                    allocator.free(ptr);
+                }
+            },
+        }
     }
 }
 
 test "random size allocations - free in same order" {
-    try umm_test_random_size(.normal);
+    try umm_test_random_size(.normal, 1);
 }
 test "random size allocations - free in reverse order" {
-    try umm_test_random_size(.reversed);
+    try umm_test_random_size(.reversed, 1);
 }
 test "random size allocations - free in random order" {
-    try umm_test_random_size(.random);
+    try umm_test_random_size(.random, 1);
 }
 
-// fn umm_test_random_size_and_random_alignment(comptime free_order: FreeOrder) !void {
-//     const Umm = UmmAllocator(.{});
-//     var buf: [std.math.maxInt(u15) * 8]u8 align(16) = undefined;
-//     var umm = try Umm.init(&buf);
-//     defer std.testing.expect(umm.deinit() == .ok) catch @panic("leak");
-//     const allocator = umm.allocator();
+test "random size allocations - free in random order - multiple passes" {
+    try umm_test_random_size(.random, 10);
+}
 
-//     var list = std.ArrayList([]u8).init(if (@import("builtin").is_test) testing.allocator else std.heap.page_allocator);
-//     defer list.deinit();
+test "random allocations and frees within memory limit" {
+    const Umm = UmmAllocator(.{});
+    var buf: [std.math.maxInt(u15) * 8]u8 align(16) = undefined;
+    var umm = try Umm.init(&buf);
+    defer std.testing.expect(umm.deinit() == .ok) catch @panic("leak");
+    const allocator = umm.allocator();
 
-//     var ascon = std.rand.Ascon.init([_]u8{0x42} ** 32);
-//     const rand = ascon.random();
+    const rand = std.Random.DefaultPrng.init(0).random();
 
-//     var i: usize = 0;
-//     while (i < 256) : (i += 1) {
-//         const size = rand.intRangeLessThanBiased(usize, 0, 1024);
-//         const alignment = std.math.pow(u20, 2, rand.intRangeAtMostBiased(u20, 0, 5));
-//         const ptr = try allocator.allocWithOptions(u8, size, alignment, null);
-//         @memset(ptr, 0x41);
-//         try list.append(ptr);
-//     }
+    var allocated = std.ArrayList([]u8).init(testing.allocator);
+    defer allocated.deinit();
 
-//     switch (free_order) {
-//         .normal => {
-//             for (list.items) |ptr| {
-//                 try testing.expect(std.mem.allEqual(u8, ptr, 0x41));
-//                 allocator.free(ptr);
-//             }
-//         },
-//         .reversed => {
-//             while (list.popOrNull()) |ptr| {
-//                 try testing.expect(std.mem.allEqual(u8, ptr, 0x41));
-//                 allocator.free(ptr);
-//             }
-//         },
-//         .random => {
-//             while (list.getLastOrNull()) |_| {
-//                 const ptr = list.swapRemove(rand.intRangeAtMost(usize, 0, list.items.len - 1));
-//                 try testing.expect(std.mem.allEqual(u8, ptr, 0x41));
-//                 allocator.free(ptr);
-//             }
-//         },
-//     }
-// }
-// test "random size allocations with random alignment - free in same order" {
-//     try umm_test_random_size_and_random_alignment(.normal);
-// }
-// test "random size allocations with random alignment - free in reverse order" {
-//     try umm_test_random_size_and_random_alignment(.reversed);
-// }
-// test "random size allocations with random alignment - free in random order" {
-//     try umm_test_random_size_and_random_alignment(.random);
-// }
+    const max_block_size = 32; // Maximum size for individual allocations
+    const iterations = 10_000; // Number of operations to perform
+
+    var i: usize = 0;
+    while (i < iterations) : (i += 1) {
+        // Randomly choose between allocation and free
+        if (rand.boolean()) {
+            // Attempt allocation
+            const size = rand.intRangeAtMost(usize, 4, max_block_size);
+            const result = allocator.alloc(u8, size);
+
+            if (result) |block| {
+                // Verify and use the memory
+                @memset(block, 0x41);
+                allocated.append(block) catch unreachable;
+            } else |err| switch (err) {
+                error.OutOfMemory => {
+                    // Handle OOM by freeing random existing block
+                    if (allocated.items.len > 0) {
+                        const idx = rand.intRangeLessThan(usize, 0, allocated.items.len);
+                        allocator.free(allocated.swapRemove(idx));
+                    }
+                },
+                else => unreachable,
+            }
+        } else {
+            // Free random block if available
+            if (allocated.items.len > 0) {
+                const idx = rand.intRangeLessThan(usize, 0, allocated.items.len);
+                const block = allocated.swapRemove(idx);
+                @memset(block, 0xfe);
+                allocator.free(block);
+            }
+        }
+    }
+
+    // Cleanup remaining allocations
+    while (allocated.pop()) |block| {
+        try testing.expect(std.mem.allEqual(u8, block, 0x41));
+        @memset(block, 0xfe);
+        allocator.free(block);
+    }
+}
