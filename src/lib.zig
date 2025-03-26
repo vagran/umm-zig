@@ -128,7 +128,7 @@ pub fn UmmAllocator(comptime config: Config) type {
                 const blocks_count = @intFromEnum(next_block) - @intFromEnum(current);
 
                 if (config.debug_logging)
-                    std.debug.print("Looking at block {} size {}\n", .{ current, blocks_count });
+                    logger.debug("Looking at block {} size {}\n", .{ current, blocks_count });
 
                 const current_storage = current.get_storage(self);
 
@@ -166,17 +166,17 @@ pub fn UmmAllocator(comptime config: Config) type {
             }
 
             if (config.debug_logging)
-                std.debug.print("Found {} with size {}\n", .{ best_block, best_size });
+                logger.debug("Found {} with size {}\n", .{ best_block, best_size });
 
             const best_block_storage = best_block.get_storage(self);
             if (best_size == target_blocks_count) {
                 if (config.debug_logging)
-                    std.debug.print("Allocating {} blocks starting at {} - exact\n",
+                    logger.debug("Allocating {} blocks starting at {} - exact\n",
                                  .{ target_blocks_count, best_block });
                 best_block_storage.disconnect_from_freelist(self);
             } else {
                 if (config.debug_logging)
-                    std.debug.print("Allocating {} blocks starting at {} - splitting\n",
+                    logger.debug("Allocating {} blocks starting at {} - splitting\n",
                                  .{ target_blocks_count, best_block });
 
                 const new_block = best_block_storage.split(best_block, self, target_blocks_count);
@@ -219,7 +219,7 @@ pub fn UmmAllocator(comptime config: Config) type {
             std.debug.assert(!block_storage.is_free()); // double free
 
             if (config.debug_logging)
-                std.debug.print("Freeing {}\n", .{block});
+                logger.debug("Freeing {}\n", .{block});
 
             block_storage.assimilate_up(block, self);
 
@@ -229,7 +229,7 @@ pub fn UmmAllocator(comptime config: Config) type {
                 block_storage.assimilate_down(self, true);
             } else {
                 if (config.debug_logging)
-                    std.debug.print("Just add to head of free list\n", .{});
+                    logger.debug("Just add to head of free list\n", .{});
 
                 const first = Block.first;
                 const first_storage = first.get_storage(self);
@@ -269,7 +269,8 @@ pub fn UmmAllocator(comptime config: Config) type {
                 const block_size = if (current == last) 1 else
                     @intFromEnum(next_block) - @intFromEnum(current);
                 if (config.debug_logging)
-                    std.debug.print("{} = {} size: {}\n", .{ current, current.get_storage(self), block_size });
+                    logger.debug("{} = {} size: {}\n",
+                                 .{ current, current.get_storage(self), block_size });
                 current = next_block;
                 if (current == Block.first) break;
             }
@@ -386,7 +387,7 @@ pub fn UmmAllocator(comptime config: Config) type {
 
                     if (next_block_storage.is_free()) {
                         if (config.debug_logging)
-                            std.debug.print("Assimilate up to next block, which is FREE\n", .{});
+                            logger.debug("Assimilate up to next block, which is FREE\n", .{});
 
                         next_block_storage.disconnect_from_freelist(umm);
 
